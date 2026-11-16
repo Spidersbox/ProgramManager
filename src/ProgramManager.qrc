@@ -1,0 +1,6 @@
+<RCC>
+  <qresource prefix="/images">
+    <file alias="icon">images/ProgramManager.ico</file>
+
+  </qresource>
+</RCC>
