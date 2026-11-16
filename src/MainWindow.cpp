@@ -773,7 +773,7 @@ bool MainWindow::pickIconDialog(QString &iconPath, int &iconIndex, QIcon &chosen
     QString startDir = "C:/Windows/System32";
 #else
     QString filter = tr("Icon Files (*.png *.svg *.ico *.xpm);;All Files (*)");
-    QString startDir = "/usr/share/icons";
+    QString startDir = "/usr/share/pixmaps";
 #endif
     QString chosenFile = QFileDialog::getOpenFileName(&dlg, tr("Browse for Icons"), startDir, filter);
     if (!chosenFile.isEmpty())

@@ -1,6 +1,5 @@
 TARGET = ProgramManager
-QT += core gui \
-      multimedia
+QT += core gui
 
 win32: QT += winextras
 win32: LIBS += -lshell32
