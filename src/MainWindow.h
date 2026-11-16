@@ -39,11 +39,14 @@ public:
   void createActions();
   void createMenuBar();
   void editItemProperties(QListWidgetItem *item);
+  QList<QIcon> extractIconsFromFile(const QString &filePath);
 
   void addItem(GroupListWidget *targetGroup,
                const QString &filePath,
                const QString &customTitle = QString(),
                const QPoint &dropPos = QPoint(-1, -1));
+
+  bool pickIconDialog(QString &iconPath, int &iconIndex, QIcon &chosenIcon);
 
 
   QAction *newGroup;

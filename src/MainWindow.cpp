@@ -27,6 +27,13 @@
   #include <QScreen>
 #endif
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <shellapi.h>
+#include <QtWin> // Add 'QT += winextras' in your .pro file inside a win32 { } block
+#endif
+
+
 #include <QDebug>
 
 
@@ -390,6 +397,12 @@ void MainWindow::loadGroupsFromIni()
         if (!iconPath.isEmpty())
         {
     // 1. Check Linux icon theme first (e.g., "utilities-terminal")
+          QList<QIcon> extracted = extractIconsFromFile(iconPath);
+          if(iconIndex >= 0 && iconIndex < extracted.size())
+          {
+          itemIcon = extracted[iconIndex];
+          }
+
           if (QIcon::hasThemeIcon(iconPath))
           {
             itemIcon = QIcon::fromTheme(iconPath);
@@ -569,6 +582,9 @@ void MainWindow::editItemProperties(QListWidgetItem *item)
 {
   if (!item) return;
 
+  int currentIconIndex = item->data(IconIndexRole).toInt();
+  QIcon selectedIcon = item->icon();
+
   QDialog dialog(this);
   dialog.setWindowTitle(tr("Program Item Properties"));
   dialog.resize(450, 220);
@@ -599,9 +615,14 @@ void MainWindow::editItemProperties(QListWidgetItem *item)
 
   connect(browseIconBtn, &QPushButton::clicked, [&]()
   {
-    QString f = QFileDialog::getOpenFileName(&dialog, tr("Select Icon"), iconEdit->text(),
-                                 tr("Icons & Images (*.png *.ico *.svg *.xpm *.exe);;All Files (*)"));
-    if (!f.isEmpty()) iconEdit->setText(f);
+//    QString f = QFileDialog::getOpenFileName(&dialog, tr("Select Icon"), iconEdit->text(),
+//                                 tr("Icons & Images (*.png *.ico *.svg *.xpm *.exe);;All Files (*)"));
+//    if (!f.isEmpty()) iconEdit->setText(f);
+    QString currentPath = iconEdit->text().trimmed();
+    if (pickIconDialog(currentPath, currentIconIndex, selectedIcon))
+    {
+      iconEdit->setText(currentPath);
+    }
   });
 
   // Helper rows with Browse buttons
@@ -635,21 +656,156 @@ void MainWindow::editItemProperties(QListWidgetItem *item)
 
     QString newIconPath = iconEdit->text().trimmed();
     item->setData(IconPathRole, newIconPath);
+    item->setData(IconIndexRole, currentIconIndex);
 
     // Update the visual icon immediately
-    if (!newIconPath.isEmpty())
+//    if (!newIconPath.isEmpty())
+//    {
+//      QIcon customIcon = QIcon::fromTheme(newIconPath, QIcon(newIconPath));
+//      if (customIcon.isNull())
+//      {
+//        QFileIconProvider provider;
+//        customIcon = provider.icon(QFileInfo(newIconPath));
+//      }
+//      if (!customIcon.isNull())
+//      {
+//        item->setIcon(customIcon);
+//      }
+//    }
+ // If the user picked an icon from the grid, apply it immediately;
+    // otherwise resolve whatever path/theme name they typed into iconEdit
+    if (!selectedIcon.isNull() && newIconPath == item->data(IconPathRole).toString())
     {
-      QIcon customIcon = QIcon::fromTheme(newIconPath, QIcon(newIconPath));
-      if (customIcon.isNull())
-      {
-        QFileIconProvider provider;
-        customIcon = provider.icon(QFileInfo(newIconPath));
-      }
-      if (!customIcon.isNull())
-      {
-        item->setIcon(customIcon);
-      }
+      item->setIcon(selectedIcon);
     }
   }
 }
+
+//-----------------------------------------------------------------------------------------
+QList<QIcon> MainWindow::extractIconsFromFile(const QString &filePath)
+{
+  QList<QIcon> icons;
+
+#ifdef Q_OS_WIN
+  std::wstring wPath = filePath.toStdWString();
+  // Passing -1 for icon index returns the total number of icons embedded in the file
+  UINT count = ExtractIconExW(wPath.c_str(), -1, nullptr, nullptr, 0);
+
+  if (count > 0)
+  {
+    QVector<HICON> largeIcons(count, nullptr);
+    UINT extracted = ExtractIconExW(wPath.c_str(), 0, largeIcons.data(), nullptr, count);
+
+    for (UINT i = 0; i < extracted; ++i)
+    {
+      if (largeIcons[i])
+      {
+        QPixmap pix = QtWin::fromHICON(largeIcons[i]);
+        icons.append(QIcon(pix));
+        DestroyIcon(largeIcons[i]); // Clean up Win32 GDI handle
+      }
+    }
+  }
+#endif
+
+  // Fallback for Ubuntu or standalone image files (.png, .ico, .svg)
+  if (icons.isEmpty())
+  {
+    QIcon single(filePath);
+    if (!single.isNull() && !single.availableSizes().isEmpty())
+    {
+      icons.append(single);
+    }
+  }
+  return icons;
+}
+
+//-----------------------------------------------------------------------------------------
+bool MainWindow::pickIconDialog(QString &iconPath, int &iconIndex, QIcon &chosenIcon)
+{
+  QDialog dlg(this);
+  dlg.setWindowTitle(iconPath.isEmpty() ? tr("Select Icon") : iconPath);
+  dlg.resize(380, 260);
+
+  QListWidget *iconList = new QListWidget(&dlg);
+  iconList->setViewMode(QListView::IconMode);
+  iconList->setMovement(QListView::Static);
+  iconList->setResizeMode(QListView::Adjust);
+  iconList->setIconSize(QSize(32, 32));
+  iconList->setGridSize(QSize(48, 48));
+
+  auto populateGrid = [&](const QString &path)
+  {
+    iconList->clear();
+    dlg.setWindowTitle(path);
+    QList<QIcon> found = extractIconsFromFile(path);
+    for (int i = 0; i < found.size(); ++i)
+    {
+      QListWidgetItem *it = new QListWidgetItem(found[i], QString());
+      it->setData(Qt::UserRole, i); // Store the icon index
+      iconList->addItem(it);
+    }
+    if (iconIndex >= 0 && iconIndex < iconList->count())
+    {
+      iconList->setCurrentRow(iconIndex);
+    }
+    else if (iconList->count() > 0)
+    {
+      iconList->setCurrentRow(0);
+    }
+  };
+    
+
+  if (!iconPath.isEmpty())
+  {
+    populateGrid(iconPath);
+  }
+
+  QPushButton *browseBtn = new QPushButton(tr("Browse..."), &dlg);
+  QPushButton *okBtn     = new QPushButton(tr("OK"), &dlg);
+  QPushButton *cancelBtn = new QPushButton(tr("Cancel"), &dlg);
+  okBtn->setDefault(true);
+
+  connect(browseBtn, &QPushButton::clicked, [&]()
+  {
+#ifdef Q_OS_WIN
+    QString filter = tr("Icon Files (*.ico *.exe *.dll);;All Files (*)");
+    QString startDir = "C:/Windows/System32";
+#else
+    QString filter = tr("Icon Files (*.png *.svg *.ico *.xpm);;All Files (*)");
+    QString startDir = "/usr/share/icons";
+#endif
+    QString chosenFile = QFileDialog::getOpenFileName(&dlg, tr("Browse for Icons"), startDir, filter);
+    if (!chosenFile.isEmpty())
+    {
+      iconPath = chosenFile;
+      iconIndex = 0;
+      populateGrid(iconPath);
+    }
+  });
+
+  // Double-clicking an icon in the grid selects it immediately
+  connect(iconList, SIGNAL(itemDoubleClicked(QListWidgetItem*)), &dlg, SLOT(accept()));
+  connect(okBtn, SIGNAL(clicked()), &dlg, SLOT(accept()));
+  connect(cancelBtn, SIGNAL(clicked()), &dlg, SLOT(reject()));
+
+  QHBoxLayout *btnLayout = new QHBoxLayout();
+  btnLayout->addWidget(browseBtn);
+  btnLayout->addStretch();
+  btnLayout->addWidget(okBtn);
+  btnLayout->addWidget(cancelBtn);
+
+  QVBoxLayout *mainLayout = new QVBoxLayout(&dlg);
+  mainLayout->addWidget(iconList);
+  mainLayout->addLayout(btnLayout);
+  if (dlg.exec() == QDialog::Accepted && iconList->currentItem())
+  {
+    iconIndex  = iconList->currentItem()->data(Qt::UserRole).toInt();
+    chosenIcon = iconList->currentItem()->icon();
+    return true;
+  }
+  return false;
+}
+
+//-----------------------------------------------------------------------------------------
 
