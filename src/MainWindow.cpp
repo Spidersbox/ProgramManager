@@ -79,48 +79,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 
   loadGroupsFromIni();
 
-  if(!groupCount)  // 4. Create the initial "Accessories" Group sub-window
-  {
-    QMdiSubWindow *groupWindow = new QMdiSubWindow();
-    groupWindow->setWindowTitle("Accessories");
-    groupWindow->resize(350, 250);
-
-    // 5. Create an icon grid with drag-and-drop enabled
-    QListWidget *iconGrid = new QListWidget();
-    iconGrid->setViewMode(QListView::IconMode);
-    iconGrid->setMovement(QListView::Snap);
-    iconGrid->setDragEnabled(true);
-    iconGrid->setAcceptDrops(true);
-    iconGrid->setDropIndicatorShown(true);
-    iconGrid->setDefaultDropAction(Qt::MoveAction);
-//    groupList->setContextMenuPolicy(Qt::CustomContextMenu);
-
-//    connect(groupList, SIGNAL(customContextMenuRequested(QPoint)), this,
-//                       SLOT(on_groupContextMenu(QPoint)));
-
-//    connect(groupList, SIGNAL(itemDoubleClicked(QListWidgetItem*)), this,
-//                       SLOT(on_programDoubleClicked(QListWidgetItem*)));
-
-//    connect(groupList, SIGNAL(fileDropped(GroupListWidget*, QString, QPoint)), this,
-//                       SLOT(on_fileDropped(GroupListWidget*, QString, QPoint)));
-
-    // Add a sample program item using this->style()
-    QListWidgetItem *item = new QListWidgetItem
-    (
-      this->style()->standardIcon(QStyle::SP_ComputerIcon), "Terminal"
-    );
-    item->setData(Qt::UserRole, "x-terminal-emulator");
-    iconGrid->addItem(item);
-
-    // 6. Launch program on double-click
-    connect(iconGrid, SIGNAL(itemDoubleClicked(QListWidgetItem*)),
-          this,     SLOT(on_programDoubleClicked(QListWidgetItem*)));
-
-    // Put the grid into the sub-window, and add the sub-window to the MDI area
-    groupWindow->setWidget(iconGrid);
-    mdiArea->addSubWindow(groupWindow);
-    groupWindow->show();
-  }
 }
 
 //--------------------------------------------------------------------------------------
@@ -205,7 +163,13 @@ void MainWindow::groupClicked()
                      SLOT(on_fileDropped(GroupListWidget*, QString, QPoint)));
 
   //; 3. Wrap it in an MDI sub-window and show it
-  QMdiSubWindow *subWindow = mdiArea->addSubWindow(groupList);
+Qt::WindowFlags flags = Qt::SubWindow
+                     | Qt::CustomizeWindowHint
+                     | Qt::WindowTitleHint
+                     | Qt::WindowMinimizeButtonHint;
+
+  QMdiSubWindow *subWindow = mdiArea->addSubWindow(groupList, flags);
+//  QMdiSubWindow *subWindow = mdiArea->addSubWindow(groupList);
   subWindow->setWindowTitle(groupName.trimmed());
   subWindow->resize(320, 240);
   subWindow->show();
@@ -372,7 +336,13 @@ void MainWindow::loadGroupsFromIni()
                        SLOT(on_fileDropped(GroupListWidget*, QString, QPoint)));
 
     // Add the sub-window to mdiArea
-    QMdiSubWindow *subWindow = mdiArea->addSubWindow(groupList);
+    Qt::WindowFlags flags = Qt::SubWindow
+                     | Qt::CustomizeWindowHint
+                     | Qt::WindowTitleHint
+                     | Qt::WindowMinimizeButtonHint;
+
+    QMdiSubWindow *subWindow = mdiArea->addSubWindow(groupList, flags);
+//    QMdiSubWindow *subWindow = mdiArea->addSubWindow(groupList);
     subWindow->setWindowTitle(groupName);
     if (gSize.size() == 2) subWindow->resize(gSize[0].toInt(), gSize[1].toInt());
     if (gPos.size() == 2)  subWindow->move(gPos[0].toInt(), gPos[1].toInt());
@@ -549,7 +519,49 @@ void MainWindow::on_groupContextMenu(const QPoint &pos)
   if (!groupList) return;
 
   QListWidgetItem *clickedItem = groupList->itemAt(pos);
-  if (!clickedItem) return; // Right-clicked empty space
+//  if (!clickedItem) return; // Right-clicked empty space
+  if (!clickedItem)
+  {
+    QMdiSubWindow *subWindow = qobject_cast<QMdiSubWindow*>(groupList->parentWidget());
+    if (!subWindow) return;
+
+    QMenu groupMenu(this);
+    QAction *renameGroupAct = groupMenu.addAction(tr("&Rename Group..."));
+    groupMenu.addSeparator();
+    QAction *deleteGroupAct = groupMenu.addAction(tr("&Delete Group"));
+
+    QAction *chosen = groupMenu.exec(groupList->mapToGlobal(pos));
+
+    if (chosen == renameGroupAct)
+    {
+      bool ok;
+      QString newName = QInputDialog::getText
+      (
+        this, tr("Rename Program Group"), tr("Group Name:"),
+               QLineEdit::Normal, subWindow->windowTitle(), &ok
+      );
+      if (ok && !newName.trimmed().isEmpty())
+      {
+        subWindow->setWindowTitle(newName.trimmed());
+      }
+    }
+    else if (chosen == deleteGroupAct)
+    {
+      QMessageBox::StandardButton reply = QMessageBox::question
+      (
+        this, tr("Delete Program Group"),
+        tr("Are you sure you want to delete the group '%1' and all its icons?")
+        .arg(subWindow->windowTitle()),
+        QMessageBox::Yes | QMessageBox::No
+      );
+      if (reply == QMessageBox::Yes)
+      {
+        mdiArea->removeSubWindow(subWindow);
+        subWindow->deleteLater();
+      }
+    }
+  return;
+  }
 
   QMenu contextMenu(this);
   QAction *propAction   = contextMenu.addAction(tr("&Properties..."));
