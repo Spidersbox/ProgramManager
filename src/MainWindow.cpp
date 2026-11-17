@@ -69,6 +69,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 
   // 2. Initialize the MDI workspace area on THIS window FIRST
   mdiArea = new QMdiArea(this);
+  mdiArea->setContextMenuPolicy(Qt::CustomContextMenu);
+  connect(mdiArea, SIGNAL(customContextMenuRequested(QPoint)), this,
+                   SLOT(on_mdiContextMenu(QPoint)));
+
   setCentralWidget(mdiArea);
 
   // 3. Create actions and menu bar
@@ -361,40 +365,32 @@ void MainWindow::loadGroupsFromIni()
         QString iconPath = parts[2];
         int iconIndex    = parts[3].toInt();
         QStringList iPos = parts[4].split('X', Qt::SkipEmptyParts);
+        QString openWith = (parts.size() >= 6) ? parts[5] : QString();
 
         // Load icon (fallback to standard system icon if file doesn't exist on current OS)
         QIcon itemIcon;
         if (!iconPath.isEmpty())
-        {
-    // 1. Check Linux icon theme first (e.g., "utilities-terminal")
+        {  // 1. Try multi-icon extraction first (Windows .dll/.exe or direct image)
           QList<QIcon> extracted = extractIconsFromFile(iconPath);
-          if(iconIndex >= 0 && iconIndex < extracted.size())
+          if (iconIndex >= 0 && iconIndex < extracted.size())
           {
-          itemIcon = extracted[iconIndex];
+            itemIcon = extracted[iconIndex];
           }
 
-          if (QIcon::hasThemeIcon(iconPath))
+          // 2. If not extracted, check Linux icon themes or OS file/MIME icons
+          if (itemIcon.isNull() || itemIcon.availableSizes().isEmpty())
           {
-            itemIcon = QIcon::fromTheme(iconPath);
-          }
-    // 2. Next, check if iconPath is an actual image/icon file on disk
-          else if (QFile::exists(iconPath))
-          {
-            QString ext = QFileInfo(iconPath).suffix().toLower();
-            if (ext == "png" || ext == "ico" || ext == "svg" || ext == "xpm" || ext == "jpg" || ext == "gif")
+            if (QIcon::hasThemeIcon(iconPath))
             {
-              itemIcon = QIcon(iconPath);
+              itemIcon = QIcon::fromTheme(iconPath);
             }
-
-            // 3. For .swf, .exe, documents, or folders, use the OS MIME/file icon provider
-            if (itemIcon.isNull() || itemIcon.availableSizes().isEmpty())
+            else if (QFile::exists(iconPath))
             {
               QFileIconProvider provider;
               itemIcon = provider.icon(QFileInfo(iconPath));
             }
           }
         }
-
 // 4. Final fallback if the file doesn't exist
         if (itemIcon.isNull() || itemIcon.availableSizes().isEmpty())
         {
@@ -407,6 +403,7 @@ void MainWindow::loadGroupsFromIni()
         item->setData(ExePathRole, exePath);
         item->setData(IconPathRole, iconPath);
         item->setData(IconIndexRole, iconIndex);
+        item->setData(OpenWithRole, openWith);
 
         groupList->addItem(item);
 
@@ -467,14 +464,15 @@ void MainWindow::saveGroupsToIni()
       // Read the icon's current X,Y position inside the group window
       QPoint pos = groupList->visualItemRect(item).topLeft();
 
-      QString line = QString("%1,%2,%3,%4,%5X%6")
-                               .arg(title)
-                               .arg(exePath)
-                               .arg(iconPath)
-                               .arg(iconIndex)
-                               .arg(pos.x())
-                               .arg(pos.y());
-
+      QString openWith = item->data(OpenWithRole).toString();
+      QString line = QString("%1,%2,%3,%4,%5X%6,%7")
+                   .arg(title)
+                   .arg(exePath)
+                   .arg(iconPath)
+                   .arg(iconIndex)
+                   .arg(pos.x())
+                   .arg(pos.y())
+                   .arg(openWith);
       ini.setValue(QString("Icon%1").arg(i + 1), line);
     }
 
@@ -488,12 +486,30 @@ void MainWindow::on_programDoubleClicked(QListWidgetItem *item)
   QString targetPath = item->data(ExePathRole).toString();
   if (targetPath.isEmpty()) return;
 
+  // 1. Check if a custom "Open With" application was set in Properties
+  QString openWith = item->data(OpenWithRole).toString().trimmed();
+  if (!openWith.isEmpty())
+  {
+    QStringList args;
+    // DOSBox / DOSBox-Staging requires "-conf" before a .conf file
+    if (targetPath.endsWith(".conf", Qt::CaseInsensitive))
+    {
+      args << "-conf" << targetPath;
+    }
+    else
+    {
+      args << targetPath;
+    }
+    QProcess::startDetached(openWith, args);
+    return;
+  }
+
+  // 2. Standard executable vs. OS default file handler
   QFileInfo info(targetPath);
   QString ext = info.suffix().toLower();
 
-  // Common executable extensions (plus extensionless binaries on Linux)
   bool isRunnableApp = ext.isEmpty() || ext == "exe" || ext == "bat" ||
-                        ext == "cmd" || ext == "sh" || ext == "appimage";
+                        ext == "cmd" || ext == "sh"  || ext == "appimage";
 
   if (!info.isDir() && info.isExecutable() && isRunnableApp)
   {
@@ -526,13 +542,18 @@ void MainWindow::on_groupContextMenu(const QPoint &pos)
     if (!subWindow) return;
 
     QMenu groupMenu(this);
-    QAction *renameGroupAct = groupMenu.addAction(tr("&Rename Group..."));
+    QAction *newItemAct     = groupMenu.addAction(tr("&New Item..."));
     groupMenu.addSeparator();
+    QAction *renameGroupAct = groupMenu.addAction(tr("&Rename Group..."));
     QAction *deleteGroupAct = groupMenu.addAction(tr("&Delete Group"));
 
     QAction *chosen = groupMenu.exec(groupList->mapToGlobal(pos));
 
-    if (chosen == renameGroupAct)
+    if (chosen == newItemAct)
+    {
+      itemClicked();
+    }
+    else if (chosen == renameGroupAct)
     {
       bool ok;
       QString newName = QInputDialog::getText
@@ -817,6 +838,18 @@ bool MainWindow::pickIconDialog(QString &iconPath, int &iconIndex, QIcon &chosen
     return true;
   }
   return false;
+}
+
+//-----------------------------------------------------------------------------------------
+void MainWindow::on_mdiContextMenu(const QPoint &pos)
+{
+  QMenu bgMenu(this);
+  QAction *newGroupAct = bgMenu.addAction(tr("&New Group..."));
+
+  if(bgMenu.exec(mdiArea->mapToGlobal(pos)) == newGroupAct)
+  {
+    groupClicked();
+  }
 }
 
 //-----------------------------------------------------------------------------------------

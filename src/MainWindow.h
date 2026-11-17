@@ -57,6 +57,7 @@ private slots:
   void on_programDoubleClicked(QListWidgetItem *item);
   void on_fileDropped(GroupListWidget *targetGroup, const QString &filePath, const QPoint &dropPos);
   void on_groupContextMenu(const QPoint &pos);
+  void on_mdiContextMenu(const QPoint &pos);
   void groupClicked();
   void itemClicked();
   void quitClicked();
