@@ -19,6 +19,7 @@
 #include <QFileIconProvider>
 #include <QMessageBox>
 #include <QDesktopServices>
+#include <QMimeData>
 #include <QUrl>
 #include <QRegularExpression>
 
@@ -80,6 +81,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
   createActions();
   createMenuBar();
   menuBar()->setNativeMenuBar(false);
+  createTrayIcon();
 
 
   loadGroupsFromIni();
@@ -89,7 +91,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 //--------------------------------------------------------------------------------------
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-  shutdownClicked();
+#ifndef Q_OS_MAC
+  if (trayIcon && trayIcon->isVisible())
+  {
+    hide();
+    event->ignore();
+    return;
+  }
+#endif
+  event->accept();
 }
 
 //-----------------------------------------------------------------------------------------
@@ -98,16 +108,26 @@ void MainWindow::createActions()
   /** main menu actions */
   newGroup = new QAction(tr("&Group"), this);
   newGroup->setToolTip(tr("Create a new Group"));
+
   newItem = new QAction(tr("&Item"), this);
   newItem->setToolTip(tr("Create a new Item"));
+
   fontSizeAction = new QAction(tr("Icon &Font Size..."), this);
 
+  toggleHideAction = new QAction(tr("&Show / Hide"), this);
+  toggleHideAction->setToolTip(tr("Show or hide"));
 
+  quitAction = new QAction(tr("E&xit"), this);
+  quitAction->setToolTip(tr("Quit application"));
+  quitAction->setMenuRole(QAction::QuitRole);
 
   /** main menu signals */
   connect(newGroup, SIGNAL(triggered()), this, SLOT(groupClicked()));
   connect(newItem, SIGNAL(triggered()), this, SLOT(itemClicked()));
   connect(fontSizeAction, SIGNAL(triggered()), this, SLOT(fontSizeClicked()));
+  connect(toggleHideAction, SIGNAL(triggered()), this, SLOT(toggleHidden()));
+  connect(quitAction, SIGNAL(triggered()), qApp, SLOT(quit()));
+  connect(qApp, SIGNAL(aboutToQuit()), this, SLOT(saveGroupsToIni()));
 }
 
 //-----------------------------------------------------------------------------------------
@@ -129,6 +149,80 @@ void MainWindow::createMenuBar()
   submenu->addAction(newItem);
   settings->addAction(fontSizeAction);
 
+}
+
+//----------------------------------------------------------------------------------------
+void MainWindow::createTrayIcon()
+{
+  QMenu *trayIconMenu;
+#ifndef Q_OS_MAC
+  trayIcon = new QSystemTrayIcon(this);
+  trayIconMenu = new QMenu(this);
+  trayIcon->setContextMenu(trayIconMenu);
+  trayIcon->setToolTip(tr("Program Manager"));
+  trayIcon->setIcon(QIcon(":/images/icon"));
+
+#else
+  // Note: On Mac, the dock icon is used to provide the tray's functionality.
+  MacDockIconHandler *dockIconHandler = MacDockIconHandler::instance();
+  trayIconMenu = dockIconHandler->dockMenu();
+  dockIconHandler->setMainWindow((QMainWindow *)this);
+#endif
+
+  trayIconMenu->addAction(toggleHideAction);
+  trayIconMenu->addSeparator();
+//  trayIconMenu->addAction(openConfigAction);
+//  trayIconMenu->addAction(optionsAction);
+
+#ifndef Q_OS_MAC // This is built-in on Mac
+//  trayIconMenu->addSeparator();
+  trayIconMenu->addAction(quitAction);
+#endif
+
+  connect(trayIcon, SIGNAL(activated(QSystemTrayIcon::ActivationReason)), this,
+                    SLOT(trayIconActivated(QSystemTrayIcon::ActivationReason)));
+  trayIcon->show();
+
+//  notificator=new Notificator(qApp->applicationName(), trayIcon);
+}
+
+//-----------------------------------------------------------------------------------------
+void MainWindow::showNormalIfMinimized(bool fToggleHidden)
+{
+  // activateWindow() (sometimes) helps with keyboard focus on Windows
+  if (isHidden())
+  {
+    show();
+    activateWindow();
+  }
+  else if (isMinimized())
+  {
+    showNormal();
+    activateWindow();
+  }
+  else if (!isActiveWindow())
+  {
+    // Bring to front if obscured by other windows
+    raise();
+    activateWindow();
+  }
+  else if(fToggleHidden)
+    hide();
+}
+
+//-----------------------------------------------------------------------------------------
+void MainWindow::trayIconActivated(QSystemTrayIcon::ActivationReason reason)
+{
+  if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick)
+  {
+    toggleHidden();
+  }
+}
+
+//-----------------------------------------------------------------------------------------
+void MainWindow::toggleHidden()
+{
+  showNormalIfMinimized(true);
 }
 
 //-----------------------------------------------------------------------------------------
@@ -268,27 +362,45 @@ void MainWindow::itemClicked()
 }
 
 //-----------------------------------------------------------------------------------------
+QString MainWindow::resolveShortcutChain(const QString &initialPath)
+{
+  QString currentPath = initialPath;
+  int maxDepth = 10; // Guard against circular symlinks
+
+  while (maxDepth-- > 0)
+  {
+    QFileInfo info(currentPath);
+    if (!info.isSymLink() && info.suffix().compare("lnk", Qt::CaseInsensitive) != 0)
+    {
+      break; // Reached the real target file
+    }
+
+    QString target = info.symLinkTarget();
+    if (target.isEmpty() || target == currentPath)
+    {
+      break; // Broken link or self-reference
+    }
+
+    currentPath = target;
+  }
+  return currentPath;
+}
+
+//-----------------------------------------------------------------------------------------
 void MainWindow::addItem(GroupListWidget *targetGroup, const QString &filePath,
                            const QString &customTitle, const QPoint &dropPos)
 {
   if (!targetGroup || filePath.isEmpty()) return;
 
   QString openWith;
-  QString resolvedPath = filePath;
-  QFileInfo initialInfo(resolvedPath);
-  if(initialInfo.isSymLink())
-  {
-    QString target = initialInfo.symLinkTarget();
-    if(!target.isEmpty() && QFile::exists(target))
-    {
-      resolvedPath = target;
-    }
-  }
+  QFileInfo originalInfo(filePath);
+  QString resolvedPath = resolveShortcutChain(filePath);
 
-  QFileInfo fileInfo(filePath);
-  QString title = customTitle.isEmpty() ? fileInfo.baseName() : customTitle;
-  QString exePath = filePath;
-  QString iconPath = filePath;
+  QFileInfo fileInfo(resolvedPath);
+  // Use originalInfo for the title so "VMware.lnk" becomes "VMware", not "vmware"
+  QString title = customTitle.isEmpty() ? originalInfo.completeBaseName() : customTitle;
+  QString exePath = resolvedPath;
+  QString iconPath = resolvedPath;
   QIcon itemIcon;
 
   // Bonus: If a Linux .desktop launcher was dropped, read its Name, Exec, and Icon
@@ -355,23 +467,6 @@ void MainWindow::addItem(GroupListWidget *targetGroup, const QString &filePath,
   {
     targetGroup->setPos(targetGroup->count() - 1, dropPos);
   }
-}
-//-----------------------------------------------------------------------------------------
-// exit this app
-void MainWindow::quitClicked()
-{
-//  saveSettings();
-  saveGroupsToIni();
-  qApp->quit();
-}
-
-//-----------------------------------------------------------------------------------------
-// exit this app
-void MainWindow::shutdownClicked()
-{
-//  saveSettings();
-  saveGroupsToIni();
-  qApp->quit();
 }
 
 //-----------------------------------------------------------------------------------------

@@ -10,13 +10,17 @@
 #include <QDropEvent>
 #include <QMimeData>
 #include <QUrl>
-
+#include <QSystemTrayIcon>
+#include <QCloseEvent>
 
 #include "GroupListWidget.h"
 
 class MainWindow : public QMainWindow
 {
   Q_OBJECT  // Required for SIGNAL/SLOT macros to work
+
+protected:
+ void closeEvent(QCloseEvent *event) override;
 
 public:
   explicit MainWindow(QWidget *parent = nullptr);
@@ -31,16 +35,21 @@ public:
 
   QMenuBar *appMenuBar;
   QMdiArea *mdiArea;
+  QMenu *trayIconMenu;
+  QSystemTrayIcon *trayIcon;
 
   int groupCount;
   int iconFontSize = 9;
 
-  void closeEvent(QCloseEvent *event);
   void loadGroupsFromIni();
-  void saveGroupsToIni();
+//  void saveGroupsToIni();
   void createActions();
   void createMenuBar();
+  void createTrayIcon();
   void editItemProperties(QListWidgetItem *item);
+
+ QString resolveShortcutChain(const QString &initialPath);
+
   QList<QIcon> extractIconsFromFile(const QString &filePath);
 
   void addItem(GroupListWidget *targetGroup,
@@ -54,6 +63,8 @@ public:
   QAction *newGroup;
   QAction *newItem;
   QAction *fontSizeAction;
+  QAction *toggleHideAction;
+  QAction *quitAction;
 
 private slots:
   // Your classic event handler function
@@ -63,9 +74,13 @@ private slots:
   void on_mdiContextMenu(const QPoint &pos);
   void groupClicked();
   void itemClicked();
-  void quitClicked();
-  void shutdownClicked();
+//  void quitClicked();
+//  void shutdownClicked();
   void fontSizeClicked();
+  void saveGroupsToIni();
+  void showNormalIfMinimized(bool fToggleHidden = false);
+  void toggleHidden();
+  void trayIconActivated(QSystemTrayIcon::ActivationReason reason);
 
 };
 
