@@ -7,6 +7,8 @@
 #include <QDropEvent>
 #include <QMimeData>
 #include <QUrl>
+#include <QResizeEvent>
+#include <QMdiSubWindow>
 
 class GroupListWidget : public QListWidget
 {
@@ -70,6 +72,26 @@ protected:
       QListWidget::dropEvent(event);
     }
   }
+
+  void resizeEvent(QResizeEvent *event) override
+  {
+    QListWidget::resizeEvent(event);
+
+    QMdiSubWindow *sub = qobject_cast<QMdiSubWindow*>(parentWidget());
+    if (sub)
+    {
+      Qt::WindowStates state = sub->windowState();
+      // Do not reflow icons when minimized or maximized
+      if (state.testFlag(Qt::WindowMinimized) || state.testFlag(Qt::WindowMaximized))
+      {
+        return;
+      }
+    }
+
+    // Reflow icons cleanly to fit the new window width
+    doItemsLayout();
+  }
+
 };
 
 #endif // GROUPLISTWIDGET_H

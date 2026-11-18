@@ -20,6 +20,7 @@
 #include <QMessageBox>
 #include <QDesktopServices>
 #include <QUrl>
+#include <QRegularExpression>
 
 #if QT_VERSION < 0x060000
   #include <QDesktopWidget>
@@ -99,13 +100,14 @@ void MainWindow::createActions()
   newGroup->setToolTip(tr("Create a new Group"));
   newItem = new QAction(tr("&Item"), this);
   newItem->setToolTip(tr("Create a new Item"));
-
+  fontSizeAction = new QAction(tr("Icon &Font Size..."), this);
 
 
 
   /** main menu signals */
   connect(newGroup, SIGNAL(triggered()), this, SLOT(groupClicked()));
   connect(newItem, SIGNAL(triggered()), this, SLOT(itemClicked()));
+  connect(fontSizeAction, SIGNAL(triggered()), this, SLOT(fontSizeClicked()));
 }
 
 //-----------------------------------------------------------------------------------------
@@ -125,7 +127,42 @@ void MainWindow::createMenuBar()
   QMenu *submenu=settings->addMenu("&New");
   submenu->addAction(newGroup);
   submenu->addAction(newItem);
+  settings->addAction(fontSizeAction);
 
+}
+
+//-----------------------------------------------------------------------------------------
+void MainWindow::fontSizeClicked()
+{
+  bool ok;
+  int newSize = QInputDialog::getInt
+  (
+    this,
+    tr("Icon Font Size"),
+    tr("Font Size (pt):"),
+    iconFontSize, // current value
+    6,            // min size
+    36,           // max size
+    1,            // step
+    &ok
+  );
+
+  if (!ok) return;
+
+  iconFontSize = newSize;
+
+  // Update all currently open group windows immediately
+  for (QMdiSubWindow *sub : mdiArea->subWindowList())
+  {
+    GroupListWidget *groupList = static_cast<GroupListWidget*>(sub->widget());
+    if (groupList)
+    {
+      QFont f = groupList->font();
+      f.setPointSize(iconFontSize);
+      groupList->setFont(f);
+      groupList->doItemsLayout(); // Refresh grid spacing for new text size
+    }
+  }
 }
 
 //-----------------------------------------------------------------------------------------
@@ -149,8 +186,17 @@ void MainWindow::groupClicked()
 
   // 1. Create the icon list (just like ui->listWidget in your MP3 player)
   GroupListWidget *groupList = new GroupListWidget();
+
+  QFont f = groupList->font();
+  f.setPointSize(iconFontSize);
+  groupList->setFont(f);
+
   groupList->setViewMode(QListView::IconMode);
-  groupList->setMovement(QListView::Snap);
+  groupList->setMovement(QListView::Snap);        // Pop icons into grid slots when added/dragged
+  groupList->setResizeMode(QListView::Fixed);     // We will trigger layout manually in resizeEvent
+  groupList->setGridSize(QSize(50, 45)); 
+//  groupList->setGridSize(QSize(84, 72));          // Adjust cell width/height to taste
+
   groupList->setDragEnabled(true);
   groupList->setAcceptDrops(true);
   groupList->setDropIndicatorShown(true);
@@ -227,6 +273,18 @@ void MainWindow::addItem(GroupListWidget *targetGroup, const QString &filePath,
 {
   if (!targetGroup || filePath.isEmpty()) return;
 
+  QString openWith;
+  QString resolvedPath = filePath;
+  QFileInfo initialInfo(resolvedPath);
+  if(initialInfo.isSymLink())
+  {
+    QString target = initialInfo.symLinkTarget();
+    if(!target.isEmpty() && QFile::exists(target))
+    {
+      resolvedPath = target;
+    }
+  }
+
   QFileInfo fileInfo(filePath);
   QString title = customTitle.isEmpty() ? fileInfo.baseName() : customTitle;
   QString exePath = filePath;
@@ -236,23 +294,47 @@ void MainWindow::addItem(GroupListWidget *targetGroup, const QString &filePath,
   // Bonus: If a Linux .desktop launcher was dropped, read its Name, Exec, and Icon
   if (fileInfo.suffix().toLower() == "desktop")
   {
-    QSettings desktopIni(filePath, QSettings::IniFormat);
-    desktopIni.beginGroup("Desktop Entry");
-    if (customTitle.isEmpty())
+    QFile desktopFile(resolvedPath);
+    if (desktopFile.open(QIODevice::ReadOnly | QIODevice::Text))
     {
-      title = desktopIni.value("Name", title).toString();
-    }
-    // Strip field codes like %u or %F from Exec command
-    QString rawExec = desktopIni.value("Exec", exePath).toString();
-    exePath = rawExec.section(' ', 0, 0);
+      QTextStream in(&desktopFile);
+      bool inDesktopEntry = false;
 
-    QString iconName = desktopIni.value("Icon").toString();
-    if(!iconName.isEmpty())
-    {
-      iconPath = iconName;
-      itemIcon = QIcon::fromTheme(iconName, QIcon(iconName));
+      while (!in.atEnd())
+      {
+        QString line = in.readLine().trimmed();
+        if (line.startsWith('['))
+        {
+          inDesktopEntry = (line == "[Desktop Entry]");
+          continue;
+        }
+        if (!inDesktopEntry || line.startsWith('#') || !line.contains('='))
+        {
+          continue;
+        }
+
+        int eqPos = line.indexOf('=');
+        QString key = line.left(eqPos).trimmed();
+        QString val = line.mid(eqPos + 1).trimmed();
+
+        if (key == "Name" && customTitle.isEmpty())
+        {
+          title = val;
+        }
+        else if (key == "Exec")
+        {
+          // Remove desktop field codes (%u, %U, %f, %F, %i, %c, %k)
+          val.remove(QRegularExpression("%[fFuUick]"));
+          exePath = val.trimmed();
+        }
+        else if (key == "Icon")
+        {
+          iconPath = val;
+          itemIcon = QIcon::fromTheme(iconPath, QIcon(iconPath));
+        }
+      }
+      desktopFile.close();
     }
-      desktopIni.endGroup();
   }
 
   if (itemIcon.isNull())
@@ -265,6 +347,7 @@ void MainWindow::addItem(GroupListWidget *targetGroup, const QString &filePath,
   item->setData(ExePathRole, exePath);
   item->setData(IconPathRole, iconPath);
   item->setData(IconIndexRole, 0);
+  item->setData(OpenWithRole, openWith);
 
   targetGroup->addItem(item);
 
@@ -300,10 +383,13 @@ void MainWindow::loadGroupsFromIni()
 
   // 1. Load MainWindow Form Options
   ini.beginGroup("Form Options");
+
   QStringList winSize = ini.value("Window Size", "800X600").toString().split('X', Qt::SkipEmptyParts);
   QStringList winPos  = ini.value("Window Location", "100X100").toString().split('X', Qt::SkipEmptyParts);
   if (winSize.size() == 2) resize(winSize[0].toInt(), winSize[1].toInt());
   if (winPos.size() == 2)  move(winPos[0].toInt(), winPos[1].toInt());
+  iconFontSize = ini.value("IconFontSize", 9).toInt();
+
   ini.endGroup();
 
   // 2. Get total group count
@@ -322,8 +408,17 @@ void MainWindow::loadGroupsFromIni()
 
     // Create the QListWidget for this group
     GroupListWidget *groupList = new GroupListWidget();
+
+    QFont f = groupList->font();
+    f.setPointSize(iconFontSize);
+    groupList->setFont(f);
+
     groupList->setViewMode(QListView::IconMode);
-    groupList->setMovement(QListView::Free); // Lets icons sit at exact X,Y coordinates
+    groupList->setMovement(QListView::Snap);        // Pop icons into grid slots when added/dragged
+    groupList->setResizeMode(QListView::Fixed);     // We will trigger layout manually in resizeEvent
+  groupList->setGridSize(QSize(50,45)); 
+//    groupList->setGridSize(QSize(84, 72));          // Adjust cell width/height to taste
+
     groupList->setDragEnabled(true);
     groupList->setAcceptDrops(true);
     groupList->setDropIndicatorShown(true);
@@ -429,8 +524,11 @@ void MainWindow::saveGroupsToIni()
 
   // 1. Save MainWindow Form Options
   ini.beginGroup("Form Options");
+
   ini.setValue("Window Size", QString("%1X%2").arg(width()).arg(height()));
   ini.setValue("Window Location", QString("%1X%2").arg(x()).arg(y()));
+  ini.setValue("IconFontSize", iconFontSize);
+
   ini.endGroup();
 
   // 2. Get all sub-windows and write total count
@@ -483,15 +581,14 @@ void MainWindow::saveGroupsToIni()
 //-----------------------------------------------------------------------------------------
 void MainWindow::on_programDoubleClicked(QListWidgetItem *item)
 {
-  QString targetPath = item->data(ExePathRole).toString();
+  QString targetPath = item->data(ExePathRole).toString().trimmed();
   if (targetPath.isEmpty()) return;
 
-  // 1. Check if a custom "Open With" application was set in Properties
+  // 1. Manual "Open With" override from Properties (e.g. DOSBox .conf files)
   QString openWith = item->data(OpenWithRole).toString().trimmed();
   if (!openWith.isEmpty())
   {
     QStringList args;
-    // DOSBox / DOSBox-Staging requires "-conf" before a .conf file
     if (targetPath.endsWith(".conf", Qt::CaseInsensitive))
     {
       args << "-conf" << targetPath;
@@ -504,20 +601,33 @@ void MainWindow::on_programDoubleClicked(QListWidgetItem *item)
     return;
   }
 
-  // 2. Standard executable vs. OS default file handler
-  QFileInfo info(targetPath);
-  QString ext = info.suffix().toLower();
-
-  bool isRunnableApp = ext.isEmpty() || ext == "exe" || ext == "bat" ||
-                        ext == "cmd" || ext == "sh"  || ext == "appimage";
-
-  if (!info.isDir() && info.isExecutable() && isRunnableApp)
+  // 2. If targetPath is a direct local file or folder on disk
+  if (QFile::exists(targetPath))
   {
-    QProcess::startDetached(targetPath, QStringList());
+    QFileInfo info(targetPath);
+    QString ext = info.suffix().toLower();
+    bool isRunnableApp = ext.isEmpty() || ext == "exe" || ext == "bat" ||
+                          ext == "cmd" || ext == "sh"  || ext == "appimage";
+
+    if (!info.isDir() && info.isExecutable() && isRunnableApp)
+    {
+      QProcess::startDetached(targetPath, QStringList());
+    }
+    else
+    {
+      QDesktopServices::openUrl(QUrl::fromLocalFile(targetPath));
+    }
+    return;
   }
-  else
+
+  // 3. Otherwise, treat targetPath as a full command line (Steam, Wine env, etc.)
+  QStringList cmdParts = QProcess::splitCommand(targetPath);
+  if (!cmdParts.isEmpty())
   {
-    QDesktopServices::openUrl(QUrl::fromLocalFile(targetPath));
+    QString program = cmdParts.takeFirst();
+    // Remove any trailing empty "" arguments left over by Wine .desktop files
+    cmdParts.removeAll(QString());
+    QProcess::startDetached(program, cmdParts);
   }
 }
 

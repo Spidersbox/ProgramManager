@@ -11,6 +11,7 @@
 #include <QMimeData>
 #include <QUrl>
 
+
 #include "GroupListWidget.h"
 
 class MainWindow : public QMainWindow
@@ -32,6 +33,7 @@ public:
   QMdiArea *mdiArea;
 
   int groupCount;
+  int iconFontSize = 9;
 
   void closeEvent(QCloseEvent *event);
   void loadGroupsFromIni();
@@ -51,6 +53,7 @@ public:
 
   QAction *newGroup;
   QAction *newItem;
+  QAction *fontSizeAction;
 
 private slots:
   // Your classic event handler function
@@ -62,6 +65,7 @@ private slots:
   void itemClicked();
   void quitClicked();
   void shutdownClicked();
+  void fontSizeClicked();
 
 };
 
